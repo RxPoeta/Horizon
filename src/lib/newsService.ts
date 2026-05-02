@@ -30,31 +30,55 @@ const parser = new Parser({
 });
 
 const SOURCES = [
-  { name: 'Reuters', url: 'https://www.reutersagency.com/feed/?best-topics=world&post_type=best', category: 'Mundo' },
-  { name: 'BBC', url: 'http://feeds.bbci.co.uk/news/world/rss.xml', category: 'Mundo' },
-  { name: 'Xataka', url: 'https://www.xataka.com/feed/full', category: 'Tecnología' },
-  { name: 'CNN', url: 'http://rss.cnn.com/rss/edition_world.rss', category: 'Mundo' },
-  { name: 'The Guardian', url: 'https://www.theguardian.com/world/rss', category: 'Mundo' },
-  { name: 'TechCrunch', url: 'https://techcrunch.com/feed/', category: 'Tecnología' },
-  { name: 'Wired', url: 'https://www.wired.com/feed/rss', category: 'Tecnología' },
+  // 1. Geopolítica y Cadenas Globales (Español)
+  { name: 'RT Actualidad', url: 'https://actualidad.rt.com/rss', category: 'Mundo' },
+  { name: 'Sputnik Latam', url: 'https://sputniknews.lat/export/pool/ee/all.xml', category: 'Mundo' },
+  { name: 'CNN en Español', url: 'https://cnnespanol.cnn.com/feed/', category: 'Mundo' },
+  
+  // 2. Páginas Famosas (Español + Inglés)
+  { name: 'BBC Mundo', url: 'https://feeds.bbci.co.uk/mundo/rss.xml', category: 'Mundo' },
   { name: 'El País', url: 'https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada', category: 'Mundo' },
-  { name: 'Al Jazeera', url: 'https://www.aljazeera.com/xml/rss/all.xml', category: 'Mundo' },
-  { name: 'Nature', url: 'https://www.nature.com/nature.rss', category: 'Ciencia' }
+  { name: 'Reuters', url: 'https://www.reutersagency.com/feed/?best-topics=world-news&post_type=best', category: 'Mundo', translate: true },
+  { name: 'DW Español', url: 'https://rss.dw.com/rdf/rss-sp-all', category: 'Mundo' },
+  
+  // 3. Reddit (Inglés + Español)
+  { name: 'Reddit WorldNews', url: 'https://www.reddit.com/r/worldnews/top/.rss?t=day', category: 'Mundo', translate: true },
+  { name: 'Reddit All', url: 'https://www.reddit.com/r/all/top/.rss?t=day', category: 'Farándula', translate: true },
+  { name: 'Reddit ES', url: 'https://www.reddit.com/r/es/top/.rss?t=day', category: 'Cultura' },
+  
+  // 4. X / Twitter (Vía RSSHub)
+  { name: 'X CNN Breaking', url: 'https://rsshub.app/twitter/user/cnnbrk', category: 'Mundo', translate: true },
+  { name: 'X Al Jazeera', url: 'https://rsshub.app/twitter/user/AJEnglish', category: 'Mundo', translate: true },
+  { name: 'X Elon Musk', url: 'https://rsshub.app/twitter/user/elonmusk', category: 'Tecnología', translate: true }
 ];
 
 export async function fetchAllNews(): Promise<NewsItem[]> {
   const newsPromises = SOURCES.map(async (source) => {
     try {
-      // Using a proxy or direct fetch if allowed
-      // In a real server-side Next.js environment, this works directly
       const feed = await parser.parseURL(source.url);
       
-      return feed.items.map((item, idx) => {
+      const items = await Promise.all(feed.items.map(async (item, idx) => {
         const score = calculateHorizonScore(item, source.name);
+        let title = item.title || 'Sin título';
+        let description = item.contentSnippet || item.content || '';
+
+        // Si la fuente requiere traducción y tenemos la API Key
+        if (source.translate && process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+          try {
+            // Traducción rápida de título (solo para los primeros 5 para evitar lentitud)
+            if (idx < 5) {
+              const translated = await translateToSpanish(title);
+              title = translated;
+            }
+          } catch (e) {
+            console.error('Translation error:', e);
+          }
+        }
+
         return {
           id: item.guid || `${source.name}-${idx}`,
-          title: item.title || 'Sin título',
-          description: item.contentSnippet || item.content || '',
+          title: title,
+          description: description,
           link: item.link || '#',
           pubDate: item.pubDate || new Date().toISOString(),
           source: source.name,
@@ -64,7 +88,9 @@ export async function fetchAllNews(): Promise<NewsItem[]> {
           author: item.creator || source.name,
           authorInitials: getInitials(item.creator || source.name),
         };
-      });
+      }));
+
+      return items;
     } catch (error) {
       console.error(`Error fetching ${source.name}:`, error);
       return [];
@@ -73,6 +99,16 @@ export async function fetchAllNews(): Promise<NewsItem[]> {
 
   const allNews = await Promise.all(newsPromises);
   return allNews.flat().sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
+}
+
+async function translateToSpanish(text: string): Promise<string> {
+  const { GoogleGenerativeAI } = await import("@google/generative-ai");
+  const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || "");
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  
+  const prompt = `Traduce exactamente este título de noticia al español de forma natural: "${text}". Responde solo con la traducción.`;
+  const result = await model.generateContent(prompt);
+  return result.response.text().trim();
 }
 
 function calculateHorizonScore(item: any, source: string): number {
